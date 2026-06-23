@@ -80,8 +80,6 @@ export class BasketRoom {
         }
 
         const current = await this.readShared();
-        if (current?.state && Number(body.revision) !== current.revision) return json(current, 409);
-
         const next = { revision: (current?.revision || 0) + 1, updatedAt: Date.now(), state: body.state };
         await this.writeShared(next);
         await this.broadcast({ revision: next.revision, updatedAt: next.updatedAt });
