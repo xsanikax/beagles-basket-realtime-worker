@@ -1,4 +1,4 @@
-name = "beagles-basket-realtime"
+name = "beagles-basket-realtime-workar"
 main = "src/index.js"
 compatibility_date = "2026-06-23"
 
