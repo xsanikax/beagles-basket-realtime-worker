@@ -1,11 +1,17 @@
 const KEY = "shared-state";
 const ACTIONS_KEY = "recent-actions";
 const encoder = new TextEncoder();
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, PUT, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, cache-control",
+  "access-control-max-age": "86400",
+};
 
 const json = (value, status = 200) =>
   new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...corsHeaders },
   });
 
 function sse(value) {
@@ -201,7 +207,7 @@ export class BasketRoom {
       this.clients.delete(id);
       try { writer.close(); } catch {}
     });
-    return new Response(readable, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" } });
+    return new Response(readable, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...corsHeaders } });
   }
 
   async commit(action) {
@@ -233,6 +239,7 @@ export class BasketRoom {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
     if (request.method === "GET" && url.pathname === "/api/sync") return this.handleSocket(request);
     if (request.method === "GET" && url.pathname === "/api/state/events") return this.handleEvents(request);
     if (request.method === "GET" && url.pathname === "/api/state") return json(await this.readShared());
@@ -254,6 +261,7 @@ export class BasketRoom {
 
 export default {
   async fetch(request, env) {
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
     const id = env.BASKET_ROOM.idFromName("household");
     return env.BASKET_ROOM.get(id).fetch(request);
   },
