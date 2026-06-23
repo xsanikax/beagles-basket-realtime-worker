@@ -51,6 +51,9 @@ function applyAction(state, action) {
   state = ensureShape(state);
   const type = action?.type;
   const p = action?.payload || {};
+  if (p.state && Array.isArray(p.state.items) && Array.isArray(p.state.history)) {
+    return ensureShape(p.state);
+  }
   if (type === "initState") {
     return ensureShape(p.state || state);
   }
