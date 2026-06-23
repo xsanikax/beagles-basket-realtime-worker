@@ -131,6 +131,7 @@ export class BasketRoom {
     this.state = state;
     this.env = env;
     this.clients = new Map();
+    this.sockets = new Set();
   }
 
   async readShared() {
@@ -157,6 +158,35 @@ export class BasketRoom {
       try { await writer.write(payload); }
       catch { this.clients.delete(id); }
     }));
+    const message = JSON.stringify(value);
+    for (const socket of [...this.sockets]) {
+      try { socket.send(message); }
+      catch { this.sockets.delete(socket); }
+    }
+  }
+
+  async handleSocket(request) {
+    if (request.headers.get("Upgrade") !== "websocket") return json({ error: "Expected websocket" }, 426);
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    server.accept();
+    this.sockets.add(server);
+    const current = await this.readShared();
+    server.send(JSON.stringify({ ...current, connected: true }));
+    server.addEventListener("message", async (event) => {
+      try {
+        const message = JSON.parse(event.data || "{}");
+        if (message.type !== "replaceState" || !message.state) return;
+        const response = await this.replaceState(message);
+        const result = await response.json();
+        server.send(JSON.stringify({ ack: true, revision: result.revision, clientMutation: message.clientMutation || 0 }));
+      } catch (error) {
+        try { server.send(JSON.stringify({ error: error.message })); } catch {}
+      }
+    });
+    server.addEventListener("close", () => this.sockets.delete(server));
+    server.addEventListener("error", () => this.sockets.delete(server));
+    return new Response(null, { status: 101, webSocket: client });
   }
 
   async handleEvents(request) {
@@ -194,7 +224,7 @@ export class BasketRoom {
       revision: (Number(current.revision) || 0) + 1,
       updatedAt: Date.now(),
       state: ensureShape(body.state),
-      lastAction: { type: "replaceState", clientId: body.clientId || null, createdAt: body.updatedAt || Date.now() },
+      lastAction: { type: "replaceState", clientId: body.clientId || null, clientMutation: body.clientMutation || 0, createdAt: body.updatedAt || Date.now() },
     };
     await this.writeShared(next);
     await this.broadcast(next);
@@ -203,6 +233,7 @@ export class BasketRoom {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/api/sync") return this.handleSocket(request);
     if (request.method === "GET" && url.pathname === "/api/state/events") return this.handleEvents(request);
     if (request.method === "GET" && url.pathname === "/api/state") return json(await this.readShared());
     if (request.method === "POST" && url.pathname === "/api/action") {
