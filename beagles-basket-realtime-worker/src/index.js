@@ -1,4 +1,5 @@
 const KEY = "shared-state";
+const ACTIONS_KEY = "recent-actions";
 const encoder = new TextEncoder();
 
 const json = (value, status = 200) =>
@@ -9,6 +10,117 @@ const json = (value, status = 200) =>
 
 function sse(value) {
   return encoder.encode(`data: ${JSON.stringify(value)}\n\n`);
+}
+
+const normalize = value => String(value || "").toLowerCase().trim().replace(/^\d+\s*/, "");
+const numericQty = qty => Math.max(1, Number.parseInt(qty, 10) || 1);
+
+function ensureShape(value) {
+  const state = value && Array.isArray(value.items) && Array.isArray(value.history) ? value : {
+    items: [], history: [], trips: 0, selectedStore: "morrisons", prices: { morrisons: {}, asda: {} }
+  };
+  state.items ||= [];
+  state.history ||= [];
+  state.trips ||= 0;
+  state.selectedStore ||= "morrisons";
+  state.prices ||= { morrisons: {}, asda: {} };
+  state.prices.morrisons ||= {};
+  state.prices.asda ||= {};
+  state.priceSources ||= { morrisons: {}, asda: {} };
+  state.priceSources.morrisons ||= {};
+  state.priceSources.asda ||= {};
+  state.productCatalog ||= { morrisons: {} };
+  state.productCatalog.morrisons ||= {};
+  state.productSelections ||= { morrisons: {} };
+  state.productSelections.morrisons ||= {};
+  return state;
+}
+
+function mergePriceData(state, patch = {}) {
+  if (patch.prices) state.prices = patch.prices;
+  if (patch.priceSources) state.priceSources = patch.priceSources;
+  if (patch.productCatalog) state.productCatalog = patch.productCatalog;
+  if (patch.productSelections) state.productSelections = patch.productSelections;
+  if (patch.lastMorrisonsRefresh) state.lastMorrisonsRefresh = patch.lastMorrisonsRefresh;
+  if (patch.lastMorrisonsError) state.lastMorrisonsError = patch.lastMorrisonsError;
+  if (patch.lastMorrisonsError === null) delete state.lastMorrisonsError;
+  ensureShape(state);
+}
+
+function applyAction(state, action) {
+  state = ensureShape(state);
+  const type = action?.type;
+  const p = action?.payload || {};
+  if (type === "initState") {
+    return ensureShape(p.state || state);
+  }
+  if (type === "addItem") {
+    mergePriceData(state, p.pricePatch);
+    const key = p.key || normalize(p.name || p.item?.name);
+    const amount = Math.max(1, Number(p.amount) || numericQty(p.item?.qty));
+    const existing = state.items.find(item => !item.done && normalize(item.name) === key);
+    if (existing) {
+      existing.qty = String(numericQty(existing.qty) + amount);
+      if (p.item?.category) existing.category = p.item.category;
+    } else if (p.item?.id && p.item?.name) {
+      state.items.unshift({ ...p.item, done: Boolean(p.item.done) });
+    }
+    return state;
+  }
+  if (type === "setDone") {
+    const item = state.items.find(item => item.id === p.id);
+    if (item) item.done = Boolean(p.done);
+    return state;
+  }
+  if (type === "setQty") {
+    const item = state.items.find(item => item.id === p.id);
+    if (item) item.qty = String(Math.max(1, numericQty(p.qty)));
+    return state;
+  }
+  if (type === "deleteItem") {
+    state.items = state.items.filter(item => item.id !== p.id);
+    return state;
+  }
+  if (type === "clearBought") {
+    const ids = new Set(Array.isArray(p.ids) ? p.ids : []);
+    state.items = state.items.filter(item => !(item.done || ids.has(item.id)));
+    return state;
+  }
+  if (type === "completeQuest") {
+    const now = Number(p.now) || Date.now();
+    const ids = new Set(Array.isArray(p.ids) ? p.ids : []);
+    const bought = state.items.filter(item => item.done || ids.has(item.id));
+    for (const item of bought) {
+      const key = normalize(item.name);
+      const source = state.priceSources?.[state.selectedStore]?.[key];
+      const price = state.prices?.[state.selectedStore]?.[key] ?? null;
+      state.history.push({ name: item.name, boughtAt: now, store: state.selectedStore, price, productName: source?.productName || null });
+    }
+    state.items = state.items.filter(item => !(item.done || ids.has(item.id)));
+    state.trips = (Number(state.trips) || 0) + 1;
+    return state;
+  }
+  if (type === "setSelectedStore") {
+    state.selectedStore = p.selectedStore || state.selectedStore || "morrisons";
+    return state;
+  }
+  if (type === "mergePriceData") {
+    mergePriceData(state, p);
+    return state;
+  }
+  if (type === "setProductSelection") {
+    mergePriceData(state, p);
+    return state;
+  }
+  if (type === "setManualPrice") {
+    state.prices ||= { morrisons: {}, asda: {} };
+    state.prices[p.store || state.selectedStore || "morrisons"] ||= {};
+    state.prices[p.store || state.selectedStore || "morrisons"][p.key] = Number(p.price);
+    if (state.priceSources?.[p.store || state.selectedStore]?.[p.key]) delete state.priceSources[p.store || state.selectedStore][p.key];
+    mergePriceData(state, p);
+    return state;
+  }
+  return state;
 }
 
 export class BasketRoom {
@@ -26,14 +138,21 @@ export class BasketRoom {
     await this.state.storage.put(KEY, value);
   }
 
+  async isDuplicate(actionId) {
+    if (!actionId) return false;
+    const recent = (await this.state.storage.get(ACTIONS_KEY)) || [];
+    if (recent.includes(actionId)) return true;
+    recent.push(actionId);
+    while (recent.length > 200) recent.shift();
+    await this.state.storage.put(ACTIONS_KEY, recent);
+    return false;
+  }
+
   async broadcast(value) {
     const payload = sse(value);
     await Promise.all([...this.clients].map(async ([id, writer]) => {
-      try {
-        await writer.write(payload);
-      } catch {
-        this.clients.delete(id);
-      }
+      try { await writer.write(payload); }
+      catch { this.clients.delete(id); }
     }));
   }
 
@@ -42,53 +161,41 @@ export class BasketRoom {
     const writer = writable.getWriter();
     const id = crypto.randomUUID();
     this.clients.set(id, writer);
-
     const current = await this.readShared();
-    await writer.write(encoder.encode(`retry: 1000\n`));
-    await writer.write(sse({ connected: true, revision: current.revision || 0, updatedAt: current.updatedAt || Date.now() }));
-
+    await writer.write(encoder.encode(`retry: 800\n`));
+    await writer.write(sse({ connected: true, revision: current.revision || 0, updatedAt: current.updatedAt || Date.now(), state: current.state || null }));
     request.signal.addEventListener("abort", () => {
       this.clients.delete(id);
       try { writer.close(); } catch {}
     });
+    return new Response(readable, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" } });
+  }
 
-    return new Response(readable, {
-      headers: {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        "x-accel-buffering": "no",
-      },
-    });
+  async commit(action) {
+    const current = await this.readShared();
+    if (await this.isDuplicate(action.actionId)) return current;
+    const baseState = current.state || action.payload?.state || null;
+    const nextState = applyAction(baseState, action);
+    const next = { revision: (Number(current.revision) || 0) + 1, updatedAt: Date.now(), state: nextState, lastAction: { type: action.type, actionId: action.actionId, clientId: action.clientId, createdAt: action.createdAt || Date.now() } };
+    await this.writeShared(next);
+    await this.broadcast(next);
+    return next;
   }
 
   async fetch(request) {
     const url = new URL(request.url);
-
-    if (request.method === "GET" && url.pathname === "/api/state/events") {
-      return this.handleEvents(request);
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/state") {
-      return json(await this.readShared());
-    }
-
-    if (request.method === "PUT" && url.pathname === "/api/state") {
+    if (request.method === "GET" && url.pathname === "/api/state/events") return this.handleEvents(request);
+    if (request.method === "GET" && url.pathname === "/api/state") return json(await this.readShared());
+    if (request.method === "POST" && url.pathname === "/api/action") {
       try {
-        const body = await request.json();
-        if (!body.state || !Array.isArray(body.state.items) || !Array.isArray(body.state.history)) {
-          return json({ error: "Invalid shared state" }, 400);
-        }
-
-        const current = await this.readShared();
-        const next = { revision: (current?.revision || 0) + 1, updatedAt: Date.now(), state: body.state };
-        await this.writeShared(next);
-        await this.broadcast({ revision: next.revision, updatedAt: next.updatedAt });
-        return json({ revision: next.revision, updatedAt: next.updatedAt, realtime: true });
-      } catch (error) {
-        return json({ error: error.message }, 500);
-      }
+        const action = await request.json();
+        if (!action || !action.type) return json({ error: "Missing action type" }, 400);
+        return json(await this.commit(action));
+      } catch (error) { return json({ error: error.message }, 500); }
     }
-
+    if (request.method === "PUT" && url.pathname === "/api/state") {
+      return json({ error: "Whole-state overwrite disabled. Use /api/action." }, 405);
+    }
     return json({ error: "Not found" }, 404);
   }
 }
