@@ -1,0 +1,11 @@
+name = "beagles-basket-realtime"
+main = "src/index.js"
+compatibility_date = "2026-06-23"
+
+[[durable_objects.bindings]]
+name = "BASKET_ROOM"
+class_name = "BasketRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BasketRoom"]

@@ -1,0 +1,11 @@
+{
+  "name": "beagles-basket-realtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.103.0"
+  }
+}
