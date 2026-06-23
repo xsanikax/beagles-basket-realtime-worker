@@ -209,7 +209,7 @@ export class BasketRoom {
     if (await this.isDuplicate(action.actionId)) return current;
     const baseState = current.state || action.payload?.state || null;
     const nextState = applyAction(baseState, action);
-    const next = { revision: (Number(current.revision) || 0) + 1, updatedAt: Date.now(), state: nextState, lastAction: { type: action.type, actionId: action.actionId, clientId: action.clientId, createdAt: action.createdAt || Date.now() } };
+    const next = { revision: (Number(current.revision) || 0) + 1, updatedAt: Date.now(), state: nextState, lastAction: { type: action.type, actionId: action.actionId, clientId: action.clientId, clientMutation: action.clientMutation || 0, createdAt: action.createdAt || Date.now() } };
     await this.writeShared(next);
     await this.broadcast(next);
     return next;
