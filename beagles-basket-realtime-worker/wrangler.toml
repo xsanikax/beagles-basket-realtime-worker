@@ -3,8 +3,8 @@ main = "src/index.js"
 compatibility_date = "2026-06-23"
 
 [[durable_objects.bindings]]
-name = "beagles-basket-realtime-workar"
-class_name = "beagles-basket-realtime-workar"
+name = "BASKET_ROOM"
+class_name = "BasketRoom"
 
 [[migrations]]
 tag = "v1"
