@@ -185,6 +185,22 @@ export class BasketRoom {
     return next;
   }
 
+  async replaceState(body = {}) {
+    if (!body.state || !Array.isArray(body.state.items) || !Array.isArray(body.state.history)) {
+      return json({ error: "Invalid shared state" }, 400);
+    }
+    const current = await this.readShared();
+    const next = {
+      revision: (Number(current.revision) || 0) + 1,
+      updatedAt: Date.now(),
+      state: ensureShape(body.state),
+      lastAction: { type: "replaceState", clientId: body.clientId || null, createdAt: body.updatedAt || Date.now() },
+    };
+    await this.writeShared(next);
+    await this.broadcast(next);
+    return json(next);
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/api/state/events") return this.handleEvents(request);
@@ -197,7 +213,9 @@ export class BasketRoom {
       } catch (error) { return json({ error: error.message }, 500); }
     }
     if (request.method === "PUT" && url.pathname === "/api/state") {
-      return json({ error: "Whole-state overwrite disabled. Use /api/action." }, 405);
+      try {
+        return this.replaceState(await request.json());
+      } catch (error) { return json({ error: error.message }, 500); }
     }
     return json({ error: "Not found" }, 404);
   }
